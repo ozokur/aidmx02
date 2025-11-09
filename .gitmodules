@@ -1,0 +1,3 @@
+[submodule "ref_audio_vu_meter"]
+	path = ref_audio_vu_meter
+	url = https://github.com/ozokur/audio-vu-meter.git

@@ -1,0 +1,4 @@
+numpy>=1.24
+pyaudiowpatch>=0.2.12
+PyAudio>=0.2.13
+torch>=2.0

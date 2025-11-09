@@ -1,0 +1,38 @@
+{
+  "20-60 Hz": {
+    "min": 0.0202,
+    "max": 0.2799,
+    "color": "#d4af37",
+    "gradient": false
+  },
+  "60-200 Hz": {
+    "min": 0.0147,
+    "max": 0.3,
+    "color": "#f0c23c",
+    "gradient": false
+  },
+  "200-600 Hz": {
+    "min": 0.0,
+    "max": 0.3,
+    "color": "#f7d24c",
+    "gradient": false
+  },
+  "600-2 kHz": {
+    "min": 0.0134,
+    "max": 0.3,
+    "color": "#fbe580",
+    "gradient": false
+  },
+  "2-6 kHz": {
+    "min": 0.0157,
+    "max": 0.3,
+    "color": "#fff1a4",
+    "gradient": false
+  },
+  "6-20 kHz": {
+    "min": 0.0,
+    "max": 0.1726,
+    "color": "#fff7d6",
+    "gradient": false
+  }
+}

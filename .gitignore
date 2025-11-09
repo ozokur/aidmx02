@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.log.*
+*.wav
+loopback_monitor.log
+output.wav
+ref_audio_vu_meter/.cursor/
+
+
