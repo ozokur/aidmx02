@@ -6,6 +6,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import tkinter as tk
@@ -19,6 +20,22 @@ except ImportError:
     TORCH_AVAILABLE = False
     torch = None
     nn = None
+
+try:
+    import serial  # type: ignore[import-not-found]
+
+    SERIAL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    serial = None  # type: ignore[assignment]
+    SERIAL_AVAILABLE = False
+
+if SERIAL_AVAILABLE:
+    try:
+        from serial.tools import list_ports  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover
+        list_ports = None  # type: ignore[assignment]
+else:
+    list_ports = None  # type: ignore[assignment]
 
 try:
     import pyaudiowpatch as pyaudio
@@ -43,6 +60,11 @@ class LoopbackMonitorApp:
         self.status_var = tk.StringVar(value="Preparing...")
         self.left_db_var = tk.StringVar(value="-inf dBFS")
         self.right_db_var = tk.StringVar(value="-inf dBFS")
+        self.low_band_byte_var = tk.StringVar(value="0")
+        self.serial_port_var = tk.StringVar(value="COM3")
+        self.serial_baud_var = tk.StringVar(value="115200")
+        default_serial_status = "Serial: disconnected" if SERIAL_AVAILABLE else "Serial: pyserial not installed"
+        self.serial_status_var = tk.StringVar(value=default_serial_status)
 
         self.band_config_path = Path(__file__).with_name("band_limits.json")
         self._persisted_limits = self._load_band_limits()
@@ -84,6 +106,12 @@ class LoopbackMonitorApp:
         self.beat_detector: "BeatDetectorRNN | None" = None
 
         self.logger = logging.getLogger(__name__)
+
+        self.serial_conn: Any | None = None
+        self.serial_button: ttk.Button | None = None
+        self.serial_port_combo: ttk.Combobox | None = None
+        self.available_serial_ports: list[str] = []
+        self.serial_include_high_var = tk.BooleanVar(value=False)
 
         self._build_gui()
 
@@ -157,8 +185,53 @@ class LoopbackMonitorApp:
         self.status_label = ttk.Label(main_frame, textvariable=self.status_var, anchor="w")
         self.status_label.grid(column=0, row=3, columnspan=2, sticky="w", pady=(12, 0))
 
+        ttk.Label(main_frame, text="20-60 Hz (0-255)").grid(column=0, row=4, sticky="w", pady=(6, 0))
+        ttk.Label(main_frame, textvariable=self.low_band_byte_var, width=6, anchor="e").grid(
+            column=1, row=4, sticky="e", pady=(6, 0)
+        )
+
+        serial_frame = ttk.LabelFrame(main_frame, text="Micro:bit Serial")
+        serial_frame.grid(column=0, row=5, columnspan=2, sticky="ew", pady=(10, 0))
+        serial_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(serial_frame, text="Port").grid(column=0, row=0, sticky="w")
+        self.serial_port_combo = ttk.Combobox(
+            serial_frame,
+            textvariable=self.serial_port_var,
+            width=10,
+            values=self.available_serial_ports,
+            state="normal",
+        )
+        self.serial_port_combo.grid(column=1, row=0, sticky="ew", padx=(6, 6))
+
+        ttk.Label(serial_frame, text="Baud").grid(column=2, row=0, sticky="w")
+        baud_entry = ttk.Entry(serial_frame, textvariable=self.serial_baud_var, width=8)
+        baud_entry.grid(column=3, row=0, sticky="ew")
+
+        refresh_button = ttk.Button(serial_frame, text="Refresh", command=self._refresh_serial_ports)
+        refresh_button.grid(column=4, row=0, padx=(6, 0))
+
+        self.serial_button = ttk.Button(serial_frame, text="Connect", command=self._toggle_serial_connection)
+        self.serial_button.grid(column=5, row=0, padx=(6, 0))
+        if not SERIAL_AVAILABLE:
+            if self.serial_port_combo is not None:
+                self.serial_port_combo.configure(state="disabled")
+            baud_entry.configure(state="disabled")
+            self.serial_button.state(["disabled"])
+            refresh_button.state(["disabled"])
+
+        ttk.Label(serial_frame, textvariable=self.serial_status_var).grid(
+            column=0, row=1, columnspan=6, sticky="w", pady=(6, 0)
+        )
+
+        ttk.Checkbutton(
+            serial_frame,
+            text="Include 6-20 kHz band",
+            variable=self.serial_include_high_var,
+        ).grid(column=0, row=2, columnspan=6, sticky="w", pady=(4, 0))
+
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(column=0, row=4, columnspan=2, sticky="ew", pady=(10, 0))
+        button_frame.grid(column=0, row=6, columnspan=2, sticky="ew", pady=(10, 0))
         button_frame.columnconfigure(1, weight=1)
 
         ttk.Label(button_frame, text="Band").grid(column=0, row=0, padx=(0, 8), sticky="w")
@@ -242,10 +315,10 @@ class LoopbackMonitorApp:
             main_frame,
             text="Circular 20-60 Hz Monitor",
             command=self._show_circular_window,
-        ).grid(column=0, row=4 + len(self.band_states), columnspan=2, sticky="ew", pady=(10, 0))
+        ).grid(column=0, row=6 + len(self.band_states), columnspan=2, sticky="ew", pady=(10, 0))
 
         addon_frame = ttk.Frame(main_frame)
-        addon_frame.grid(column=0, row=5 + len(self.band_states), columnspan=2, sticky="ew", pady=(6, 0))
+        addon_frame.grid(column=0, row=7 + len(self.band_states), columnspan=2, sticky="ew", pady=(6, 0))
         addon_frame.columnconfigure(1, weight=1)
         ttk.Label(addon_frame, text="Include 6-20 kHz overlay").grid(column=0, row=0, sticky="w")
         self.circular_include_high_var = tk.BooleanVar(value=False)
@@ -265,7 +338,122 @@ class LoopbackMonitorApp:
             main_frame,
             text="Neon Energy Wave",
             command=self._show_neon_window,
-        ).grid(column=0, row=6 + len(self.band_states), columnspan=2, sticky="ew", pady=(10, 0))
+        ).grid(column=0, row=8 + len(self.band_states), columnspan=2, sticky="ew", pady=(10, 0))
+
+        self._refresh_serial_ports()
+
+    def _set_serial_status(self, message: str) -> None:
+        self.serial_status_var.set(f"Serial: {message}")
+
+    def _toggle_serial_connection(self) -> None:
+        if self.serial_conn is None:
+            self._connect_serial()
+        else:
+            self._disconnect_serial()
+
+    def _refresh_serial_ports(self) -> None:
+        if not SERIAL_AVAILABLE or list_ports is None:
+            ports: list[str] = []
+        else:
+            try:
+                ports = [info.device for info in list_ports.comports()]
+            except Exception as exc:  # pragma: no cover - hardware dependent
+                self.logger.warning("Failed to enumerate COM ports: %s", exc)
+                ports = []
+        self.available_serial_ports = ports
+        if self.serial_port_combo is not None:
+            self.serial_port_combo["values"] = ports
+
+        if self.serial_conn is not None:
+            return
+
+        if ports:
+            current_port = self.serial_port_var.get().strip()
+            if not current_port:
+                self.serial_port_var.set(ports[0])
+            self._set_serial_status(f"Disconnected ({len(ports)} port(s) found)")
+        else:
+            self._set_serial_status("No ports found")
+
+    def _connect_serial(self) -> None:
+        if not SERIAL_AVAILABLE or serial is None:
+            messagebox.showerror(
+                "Serial Unavailable",
+                "pyserial is not installed. Please install pyserial to enable serial output.",
+                parent=self.root,
+            )
+            return
+
+        if self.serial_conn is not None:
+            return
+
+        self._refresh_serial_ports()
+
+        port = self.serial_port_var.get().strip()
+        if not port:
+            self._set_serial_status("Port required")
+            messagebox.showwarning("Serial Port", "Please enter a COM port name (e.g., COM3).", parent=self.root)
+            return
+
+        try:
+            baud = int(str(self.serial_baud_var.get()).strip())
+        except (TypeError, ValueError):
+            self._set_serial_status("Invalid baud rate")
+            messagebox.showwarning("Serial Baud", "Please enter a valid integer baud rate (e.g., 115200).", parent=self.root)
+            return
+
+        try:
+            self.serial_conn = serial.Serial(port=port, baudrate=baud, timeout=0, write_timeout=0.1)
+        except Exception as exc:  # pragma: no cover - hardware dependent
+            self.serial_conn = None
+            self.logger.warning("Serial connection failed: %s", exc)
+            self._set_serial_status("Connection failed")
+            messagebox.showerror(
+                "Serial Error",
+                f"Could not open serial port {port}:\n{exc}",
+                parent=self.root,
+            )
+            return
+
+        self._set_serial_status(f"Connected ({port})")
+        if self.serial_button is not None:
+            self.serial_button.configure(text="Disconnect")
+
+    def _disconnect_serial(self) -> None:
+        conn = self.serial_conn
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception as exc:  # pragma: no cover - hardware dependent
+                self.logger.warning("Error while closing serial port: %s", exc)
+            finally:
+                self.serial_conn = None
+        self._set_serial_status("Disconnected")
+        if self.serial_button is not None:
+            self.serial_button.configure(text="Connect")
+        self.serial_include_high_var.set(False)
+
+    def _send_serial_values(self, values: list[int | None]) -> None:
+        conn = self.serial_conn
+        if conn is None:
+            return
+        if not values:
+            return
+        parts: list[str] = []
+        for value in values:
+            if value is None:
+                continue
+            safe_value = max(0, min(255, int(value)))
+            parts.append(str(safe_value))
+        if not parts:
+            return
+        payload = ",".join(parts) + "\n"
+        try:
+            conn.write(payload.encode("ascii"))
+        except Exception as exc:  # pragma: no cover - hardware dependent
+            self.logger.warning("Serial write failed: %s", exc)
+            self._set_serial_status("Write failed; disconnected")
+            self._disconnect_serial()
 
     def _show_band_window(self, state: dict) -> None:
         window = state["window"]
@@ -542,7 +730,8 @@ class LoopbackMonitorApp:
 
     def _initialize_audio(self) -> None:
         try:
-            self.pa = pyaudio.PyAudio()
+            if self.pa is None:
+                self.pa = pyaudio.PyAudio()
         except Exception as exc:
             messagebox.showerror("Audio Error", f"PyAudio could not start:\n{exc}")
             raise
@@ -884,6 +1073,34 @@ class LoopbackMonitorApp:
         self.right_meter["value"] = self._db_to_meter(right_db)
         energy_level = float(np.mean(display_rms))
 
+        serial_values: list[int | None] = []
+        if self.band_states:
+            low_state = self.band_states[0]
+            min_val, max_val = low_state["min"], low_state["max"]
+            if max_val <= min_val:
+                byte_value = 0
+            else:
+                normalized = (float(low_state["last"]) - min_val) / (max_val - min_val)
+                normalized = max(0.0, min(1.0, normalized))
+                byte_value = int(round(normalized * 255.0))
+            self.low_band_byte_var.set(str(byte_value))
+            serial_values.append(byte_value)
+
+            if self.serial_include_high_var.get() and len(self.band_states) > 1:
+                high_state = self.band_states[-1]
+                h_min, h_max = high_state["min"], high_state["max"]
+                if h_max <= h_min:
+                    high_byte = 0
+                else:
+                    h_norm = (float(high_state["last"]) - h_min) / (h_max - h_min)
+                    h_norm = max(0.0, min(1.0, h_norm))
+                    high_byte = int(round(h_norm * 255.0))
+                serial_values.append(high_byte)
+
+            self._send_serial_values(serial_values)
+        else:
+            self.low_band_byte_var.set("0")
+
         for state in self.band_states:
             window = state.get("window")
             if window is not None and window.winfo_exists():
@@ -953,6 +1170,8 @@ class LoopbackMonitorApp:
         if self.neon_window is not None and self.neon_window.winfo_exists():
             self.neon_window.destroy()
         self.neon_window = None
+
+        self._disconnect_serial()
 
         self.root.destroy()
         self.logger.info("Application closed.")

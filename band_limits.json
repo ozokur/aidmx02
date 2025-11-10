@@ -1,7 +1,7 @@
 {
   "20-60 Hz": {
-    "min": 0.0202,
-    "max": 0.2799,
+    "min": 0.0636,
+    "max": 0.2932,
     "color": "#d4af37",
     "gradient": false
   },
@@ -25,13 +25,13 @@
   },
   "2-6 kHz": {
     "min": 0.0157,
-    "max": 0.3,
+    "max": 0.3004,
     "color": "#fff1a4",
     "gradient": false
   },
   "6-20 kHz": {
-    "min": 0.0,
-    "max": 0.1726,
+    "min": 0.0068,
+    "max": 0.0971,
     "color": "#fff7d6",
     "gradient": false
   }
